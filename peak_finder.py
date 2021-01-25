@@ -9,10 +9,29 @@ Created on Wed Aug 16 17:20:20 2017
 import numpy as _np
 import pandas as _pd
 import math as _math
-from scipy import optimize as _optimize, signal as _signal
+from scipy import optimize as _optimize, signal as _signal, stats as _stats
 import matplotlib.pyplot as _plt
 from models import Gaussian as _Gaussian
 import logging as _logging
+
+def get_bin_centers(x):
+    '''
+
+    Compute bin centers from bin edges returned by histogram function.
+
+    Parameters
+    ----------
+    x: array-like 1d
+        Bin edges, including left and rightmost edges.
+
+    Returns
+    -------
+    centers: ndarray 1d
+        Bin centers.
+
+    '''
+    x = _np.asarray(x)
+    return x[:-1] + _np.ediff1d(x)/2.0
 
 
 def plot_gaussian_peaks(x, parameters, ax, plot_individual=False, **kwargs):
@@ -229,7 +248,6 @@ def guess_peaks(
         Default is False.
     plot_bar: bool
         Plots original data as bar if True. Default is True.
-    
     npts: int
         Number of points over which to plot fit. Default is 128.
     verbose: bool, default is False
@@ -274,7 +292,7 @@ def guess_peaks(
     # find peaks in y and create a guess (x0, A, sigma)
     if guess is None:
         # get extrema
-        peak_index, = _signal.argrelextrema(y, **kwargs)
+        (peak_index,) = _signal.argrelextrema(y, **kwargs)
 
         # limit found peaks in x
         if x0_max is not None:
@@ -286,10 +304,8 @@ def guess_peaks(
             assert isinstance(
                 n_peaks, int
             ), "n_peaks must be integer (# Gaussians to fit)."
-            # sort by decreasing magnitude
-            peaks_sorted = _np.argsort(y[peak_index])[::-1]
-            # get the biggest n_peaks
-            peak_index = peak_index[peaks_sorted[:n_peaks]]
+            # sort by decreasing magnitude and get the biggest n_peaks
+            peak_index = peak_index[_np.argsort(y[peak_index])[::-1][:n_peaks]]
 
             # check n_peaks detected
             if peak_index.size > n_peaks:
@@ -401,3 +417,52 @@ def guess_peaks(
         ax.legend()
 
     return params
+
+
+def guess_peaks_kde(values, n_peaks=None, bins=100, density=False, ax=None, npts=256, **kwargs):
+    """
+
+    Use Kernel Density Estimation to find peak locations within values and then fit the peaks.
+
+    Parameters
+    ----------
+    values: array-like 1d
+        Observed values.
+    n_peaks: None or int
+        Maximum number of peaks to consider
+    bins: int
+        Number of bins for histogram.
+    density: bool
+        If True then the probability density histogram is computed.
+    ax: None or plt.Axes
+        Axes to plot on if provided.
+    npts: int
+        Number of points to simulate KDE distribution for peak fitting.
+    kwargs: passed to scipy.stats.gaussian_kde, eg. bw_method and guess_peaks.
+
+    Returns
+    -------
+    params: pd.DataFrame
+        Fitted peak values.
+    
+    """
+    values = _np.asarray(values)
+    # evaluate kde
+    kde = _stats.gaussian_kde(values, **kwargs)
+
+    # compute histogram from values
+    vals, bins = _np.histogram(values, bins=bins, density=density)
+
+    x = _np.linspace(values.min(), values.max(), npts)
+    y = kde(x) if density else kde(x) * _np.trapz(vals, get_bin_centers(bins))
+
+    # guess peaks in KDE
+    guess = guess_peaks(y, x, n_peaks=n_peaks)
+
+    # plot bar if requested
+    if ax is not None:
+        ax.bar(get_bin_centers(bins), vals, _np.ediff1d(bins))
+
+    # use KDE peaks as guess to fit histogram data
+    # second fit required as KDE normally overestimates peak width (depends on bandwidth)
+    return guess_peaks(vals, get_bin_centers(bins), guess=guess.values.ravel(), ax=ax)
